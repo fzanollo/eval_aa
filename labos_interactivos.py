@@ -2,14 +2,15 @@
 Labos de Evaluación de Sistemas de AA, versión interactiva.
 
 Correr con:   streamlit run labos_interactivos.py
-Necesita:     pip install streamlit matplotlib   (numpy y pandas vienen con streamlit)
+Necesita:     streamlit, numpy, pandas, matplotlib   (ver requirements.txt)
 
 Es una simulación propia en numpy (no usa la librería expected_cost), pensada para
 entender los conceptos moviendo perillas. Reproduce las ideas de los notebooks pero
 NO los números exactos: los datos simulados no son los mismos.
 """
 from pathlib import Path
-import re
+import io
+import textwrap
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,10 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Labos de Evaluación de Sistemas de AA", layout="wide")
 
+plt.rcParams.update({
+    "font.size": 10, "axes.titlesize": 11, "axes.labelsize": 10,
+    "legend.fontsize": 9, "xtick.labelsize": 9, "ytick.labelsize": 9,
+})
 BLUE, RED, GREEN, GREY, ORANGE = "#1f77b4", "#d62728", "#2ca02c", "#7f7f7f", "#ff7f0e"
 
 
@@ -89,16 +94,28 @@ def fit_affine(z, t, with_shift, iters=60):
     return w, c
 
 
-def fig_small(w=5.2, h=3.3):
+# ----------------------------------------------------------------------------
+# Utilidades de interfaz
+# ----------------------------------------------------------------------------
+def fig_small(w=5.4, h=3.4):
     fig, ax = plt.subplots(figsize=(w, h))
     ax.spines[["top", "right"]].set_visible(False)
     return fig, ax
 
 
-def show(fig):
+def legend_below(ax, ncol=1, fontsize=8, y=-0.24):
+    """Leyenda debajo del gráfico para que no tape curvas ni rayas."""
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, y), ncol=ncol, frameon=False, fontsize=fontsize)
+
+
+def show(fig, ppi=100):
+    """Dibuja la figura a TAMAÑO FIJO (ppi píxeles por pulgada) en vez de estirarla al ancho de la columna."""
     fig.tight_layout()
-    st.pyplot(fig)
+    w_in = fig.get_size_inches()[0]
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200)
     plt.close(fig)
+    st.image(buf.getvalue(), width=int(w_in * ppi))
 
 
 def init_state(defaults):
@@ -113,8 +130,8 @@ def set_state(**kw):
 # ----------------------------------------------------------------------------
 st.title("Evaluación de sistemas de AA: laboratorios interactivos")
 st.caption(
-    "Cada pestaña tiene perillas a la izquierda y gráficos a la derecha. "
-    "Abajo de cada una hay experimentos guiados: hacelos en orden y fijate qué cambia."
+    "Cada pestaña tiene primero los **conceptos** que se usan, después perillas a la izquierda y gráficos a la derecha, "
+    "y al final experimentos guiados: hacelos en orden y fijate qué cambia."
 )
 tabs = st.tabs([
     "Labo 1 · Datos",
@@ -134,6 +151,19 @@ with tabs[0]:
         "Acá no se entrena nada (no hay `features.csv`): solo se mira la metadata. "
         "Sirve para detectar **correlaciones espurias** y **dependencia del hablante** antes de decidir cómo dividir los datos."
     )
+    with st.expander("Conceptos de esta pestaña", expanded=True):
+        st.markdown(
+            "- **Clase**: la emoción de cada muestra (Anger, Happiness, Sadness o Neutral state).\n"
+            "- **Baseline mayoritario**: accuracy de un sistema que siempre responde la clase más frecuente. "
+            "Es el piso: un modelo que no lo supera no aprendió nada útil.\n"
+            "- **Grupo**: una condición en la que se grabó cada muestra (hablante, tarea, género…).\n"
+            "- **Hablante en IEMOCAP**: no hay una columna de hablante; se arma con *sesión × género*, que da los 10 actores "
+            "(5 sesiones, un hombre y una mujer en cada una).\n"
+            "- **Correlación espuria**: relación entre un grupo y la clase que no se va a mantener en datos nuevos. "
+            "El modelo puede usarla como atajo (\"este hablante suele estar enojado\") en vez de aprender la emoción.\n"
+            "- **Cómo leer el gráfico**: cada barra es un grupo y los colores son la proporción de cada clase dentro de ese grupo. "
+            "Si las barras son muy distintas entre sí, el grupo por sí solo ya \"predice\" algo de la clase."
+        )
     EMO = ["Anger", "Happiness", "Sadness", "Neutral state"]
     base = Path(__file__).parent
 
@@ -156,38 +186,46 @@ with tabs[0]:
             df["género"] = df.utterance_gender
             df["sesión"] = df.session_number.astype(str)
             groups = ["hablante", "tarea", "género", "sesión"]
+            st.caption("hablante = sesión + género (ej. 3F = mujer de la sesión 3). tarea: *script* = guion leído, *impro* = improvisación.")
         else:
             df["hablante"] = df.speaker.astype(str).str.zfill(2)
             df["género"] = df.gender
             df["intensidad"] = df.emotional_string
             df["frase"] = df.statement.astype(str)
             groups = ["hablante", "género", "intensidad", "frase"]
+            st.caption("hablante = actor (24). intensidad: *normal* o *strong*. frase: cuál de las dos frases se leyó.")
         g = st.selectbox("Agrupar por", groups)
         ct = pd.crosstab(df[g], df["clase"], normalize="index")[EMO]
         overall = df["clase"].value_counts(normalize=True)[EMO]
 
-        c1, c2 = st.columns([2, 1])
+        c1, c2 = st.columns([2.2, 1])
         with c1:
-            fig, ax = fig_small(6.5, 0.45 * len(ct) + 1.6)
-            left = np.zeros(len(ct))
+            n = len(ct)
+            fig, ax = fig_small(7.0, min(9.0, 0.30 * n + 1.5))
+            left = np.zeros(n)
             for emo, col in zip(EMO, [RED, ORANGE, BLUE, GREY]):
                 ax.barh(ct.index.astype(str), ct[emo], left=left, label=emo, color=col)
                 left += ct[emo].to_numpy()
-            ax.set_xlim(0, 1); ax.set_xlabel("proporción de cada clase dentro del grupo")
-            ax.invert_yaxis(); ax.legend(ncol=4, bbox_to_anchor=(0, 1.02), loc="lower left", frameon=False, fontsize=8)
+            ax.set_xlim(0, 1)
+            ax.set_xlabel("proporción de cada clase dentro del grupo")
+            ax.set_ylabel(g)
+            ax.invert_yaxis()
+            ax.legend(ncol=4, bbox_to_anchor=(0, 1.01), loc="lower left", frameon=False)
             show(fig)
         with c2:
-            st.metric("Baseline mayoritario (accuracy)", f"{overall.max():.1%}", help="Lo que logra un sistema que siempre dice la clase más frecuente.")
-            st.write("Proporción global de clases")
-            st.dataframe((overall * 100).round(1).rename("%").to_frame())
+            st.metric("Baseline mayoritario (accuracy)", f"{overall.max():.1%}",
+                      help="Lo que logra un sistema que siempre responde la clase más frecuente.")
+            st.markdown("**Proporción global de cada clase**")
+            for emo in EMO:
+                st.markdown(f"- {emo}: **{overall[emo]:.1%}**")
 
     st.markdown("**Experimentos guiados**")
     st.markdown(
-        "- **IEMOCAP, agrupar por *tarea***: *anger* pesa mucho más en *script* que en *impro*. "
-        "Si un modelo aprende 'estilo de habla = script → enojo' y además dividís al azar, el test sale optimista.\n"
+        "- **IEMOCAP, agrupar por *tarea***: *Anger* pesa mucho más en *script* que en *impro*. "
+        "Si un modelo aprende \"estilo de habla de guion → enojo\" y además dividís al azar, el test sale optimista.\n"
         "- **IEMOCAP, agrupar por *hablante***: cada actor tiene su propia mezcla de clases. "
         "Con split aleatorio los mismos 10 hablantes están en train y en test; por eso hay que dividir por sesión u hablante.\n"
-        "- **RAVDESS, agrupar por *intensidad***: *neutral* solo existe con intensidad normal (96 muestras vs 192 del resto). Fijate qué barra falta."
+        "- **RAVDESS, agrupar por *intensidad***: *Neutral* solo existe con intensidad normal (96 muestras contra 192 de las otras clases). Fijate qué barra falta."
     )
 
 
@@ -201,21 +239,43 @@ with tabs[1]:
         "Sistema binario cuyos scores son **LLRs calibrados**. Se decide *clase 1* si LLR > umbral. "
         "El costo depende de **cuánto cuesta cada error** y de **con qué priors lo evaluás**."
     )
-    ctrl, out = st.columns([1, 2.2])
+    with st.expander("Conceptos de esta pestaña", expanded=True):
+        k1, k2 = st.columns(2)
+        with k1:
+            st.markdown(
+                "- **Score / LLR** (log-likelihood ratio): log p(x | clase 1) / p(x | clase 0). "
+                "Positivo = parece de clase 1, negativo = parece de clase 0, 0 = indiferente.\n"
+                "- **Umbral**: se decide *clase 1* si el LLR lo supera, *clase 0* si no.\n"
+                "- **Falsa alarma (c01)**: decidir *1* cuando era *0*. En esta pestaña siempre cuesta 1.\n"
+                "- **Pérdida (c10)**: decidir *0* cuando era *1*. Es el costo que movés.\n"
+                "- **Prior**: proporción esperada de cada clase. Las **de los datos** son con las que se generan las muestras; "
+                "las **del costo** son las que se usan para evaluar (las de la aplicación real). Pueden ser distintas."
+            )
+        with k2:
+            st.markdown(
+                "- **Costo esperado (EC)** = P₀·c01·R01 + P₁·c10·R10, donde R01 es la fracción de la clase 0 que se decidió como 1 "
+                "y R10 la fracción de la clase 1 que se decidió como 0.\n"
+                "- **EC normalizado**: EC dividido por el EC del mejor sistema *naive* (el que ignora el score y decide siempre lo mismo). "
+                "**1 = igual que ignorar el score, menor que 1 = mejor, mayor que 1 = peor.**\n"
+                "- **Umbral de Bayes**: el que minimiza el EC si el LLR está calibrado: θ = log( c01·P₀ / (c10·P₁) ), con las priors del costo.\n"
+                "- **Posterior** P(clase | x): si el sistema la entrega, ya trae unas priors incorporadas. "
+                "Decidir con ella equivale a usar el umbral θ calculado con *esas* priors.\n"
+                "- **Mejor umbral empírico**: el que da menor EC mirando las etiquetas de estos datos."
+            )
+    ctrl, out = st.columns([1, 2.6])
     with ctrl:
         st.markdown("**Los datos**")
         d = st.slider("Separación entre clases (d′)", 0.5, 5.0, key="l2_d", step=0.1,
-                      help="Más alto = problema más fácil. 2.8 se parece al histograma de Simulacion.pdf.")
-        P1 = st.slider("Prior de la clase 1 en los datos", 0.02, 0.98, key="l2_P1", step=0.01)
-        seed = st.number_input("Semilla", 0, 999, key="l2_seed")
+                      help="Más alto = clases más separadas = problema más fácil. 2.8 se parece al histograma de Simulacion.pdf.")
+        P1 = st.slider("Prior de la clase 1 en los datos", 0.02, 0.98, key="l2_P1", step=0.01,
+                       help="Proporción de muestras de clase 1 con las que se genera el dataset.")
+        seed = st.number_input("Semilla", 0, 999, key="l2_seed", help="Cambiarla genera otras muestras con los mismos parámetros.")
         st.markdown("**El costo**")
         b1, b2 = st.columns(2)
-        b1.button("EC1: costos 0-1, priors 0.5", on_click=set_state,
-                  kwargs=dict(l2_c10=1.0, l2_P1c=0.5, l2_same=False))
-        b2.button("EC2: c10=2, priors de datos", on_click=set_state,
-                  kwargs=dict(l2_c10=2.0, l2_same=True))
-        c10 = st.select_slider("Costo de perder una clase 1 (c10). El de falsa alarma c01 = 1",
-                               options=[0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0], key="l2_c10")
+        b1.button("EC1: costos 0-1, priors 0.5", on_click=set_state, kwargs=dict(l2_c10=1.0, l2_P1c=0.5, l2_same=False))
+        b2.button("EC2: c10=2, priors de datos", on_click=set_state, kwargs=dict(l2_c10=2.0, l2_same=True))
+        c10 = st.select_slider("Pérdida c10: costo de decidir 0 cuando era 1", options=[0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0], key="l2_c10",
+                               help="La falsa alarma (c01) cuesta siempre 1. Si c10 > 1, perder un caso de clase 1 es peor que una falsa alarma.")
         same = st.checkbox("Usar en el costo las mismas priors que tienen los datos", key="l2_same")
         P1c = P1 if same else st.slider("Prior de la clase 1 con la que se calcula el costo", 0.02, 0.98, key="l2_P1c", step=0.01)
         st.markdown("**La posterior (para decidir con Bayes)**")
@@ -235,33 +295,41 @@ with tabs[1]:
     with out:
         m1, m2, m3 = st.columns(3)
         m1.metric("EC con umbral de Bayes (priors del costo)", f"{ec_cost:.3f}", help=f"umbral = {th_cost:.2f}")
-        m2.metric("EC decidiendo con la posterior", f"{ec_post:.3f}", delta=f"{ec_post - ec_cost:+.3f}", delta_color="inverse",
-                  help=f"umbral implícito = {th_post:.2f}")
-        m3.metric("EC mínimo posible en estos datos", f"{ec_best:.3f}", help=f"umbral óptimo empírico = {th_best:.2f}")
+        dlt = ec_post - ec_cost
+        m2.metric("EC decidiendo con la posterior", f"{ec_post:.3f}",
+                  delta=None if abs(dlt) < 5e-4 else f"{dlt:+.3f} vs Bayes", delta_color="inverse",
+                  help=f"umbral implícito en la posterior = {th_post:.2f}")
+        m3.metric("EC mínimo posible en estos datos", f"{ec_best:.3f}", help=f"mejor umbral empírico = {th_best:.2f}")
         f1, f2 = st.columns(2)
         with f1:
-            fig, ax = fig_small()
-            ax.plot(taus, ec, color="k")
-            ax.axhline(1, color=GREY, ls=":", lw=1); ax.text(taus[-1], 0.93, "sistema naive = 1", color=GREY, fontsize=8, ha="right")
-            ax.axvline(th_cost, color=BLUE, ls="--", label="Bayes (priors del costo)")
+            fig, ax = fig_small(5.0, 4.6)
+            ax.plot(taus, ec, color="k", label="EC según el umbral")
+            ax.axhline(1, color=GREY, ls=":", lw=1.3, label="sistema naive (= 1)")
+            ax.axvline(th_cost, color=BLUE, ls="--", label="Bayes con priors del costo")
             ax.axvline(th_post, color=RED, ls="--", label="umbral implícito en la posterior")
             ax.axvline(th_best, color=GREEN, ls="-", lw=1.5, label="mejor umbral empírico")
-            ax.set_ylim(0, min(2.5, max(1.3, ec.max()))); ax.set_xlabel("umbral sobre el LLR"); ax.set_ylabel("EC normalizado")
-            ax.legend(fontsize=7, frameon=False, loc="upper left")
+            ax.set_ylim(0, min(2.6, max(1.5, ec.max())))
+            ax.set_xlabel("umbral sobre el LLR"); ax.set_ylabel("costo esperado normalizado")
+            legend_below(ax, y=-0.2)
             show(fig)
+            st.caption("**Cómo leerlo:** cada punto de la curva es el costo que obtenés si decidís *clase 1* cuando el LLR pasa ese umbral. "
+                       "Lo mejor es el fondo de la curva; las rayas marcan dónde caen los distintos umbrales.")
         with f2:
-            fig, ax = fig_small()
+            fig, ax = fig_small(5.0, 4.6)
             bins = np.linspace(-lim, lim, 70)
-            ax.hist(llr[t == 0], bins, density=True, alpha=0.6, color=BLUE, label="clase 0")
-            ax.hist(llr[t == 1], bins, density=True, alpha=0.6, color=RED, label="clase 1")
+            ax.hist(llr[t == 0], bins, density=True, alpha=0.6, color=BLUE, label="muestras de clase 0")
+            ax.hist(llr[t == 1], bins, density=True, alpha=0.6, color=RED, label="muestras de clase 1")
             ax.axvline(th_cost, color=BLUE, ls="--"); ax.axvline(th_post, color=RED, ls="--"); ax.axvline(th_best, color=GREEN)
-            ax.set_xlabel("LLR"); ax.legend(fontsize=8, frameon=False)
+            ax.set_xlabel("LLR (score del sistema)"); ax.set_ylabel("densidad de muestras")
+            legend_below(ax, y=-0.2)
             show(fig)
+            st.caption("**Cómo leerlo:** distribución de los scores de cada clase. Donde se solapan hay errores inevitables. "
+                       "Las rayas son las mismas del gráfico de la izquierda (azul: Bayes, roja: posterior, verde: mejor empírico).")
         if abs(th_cost - th_post) < 0.05:
-            st.success("La posterior usa las mismas priors que el costo → los dos umbrales coinciden y decidís de forma óptima.")
+            st.success("La posterior usa las mismas priors que el costo: los dos umbrales coinciden y decidís de forma óptima.")
         else:
             st.warning(
-                f"La posterior usa priors distintas a las del costo → umbral {th_post:.2f} en vez de {th_cost:.2f}. "
+                f"La posterior usa priors distintas a las del costo: umbral {th_post:.2f} en vez de {th_cost:.2f}. "
                 f"Costo extra por el desajuste: {ec_post - ec_cost:+.3f} (normalizado)."
             )
 
@@ -270,7 +338,9 @@ with tabs[1]:
         "1. Apretá **EC1**: el umbral de Bayes queda en 0 (costos iguales y priors 0.5). Después **EC2**: se corre a ≈1.5. "
         "*El score es el mismo; cambió lo que consideramos un buen desempeño.*\n"
         "2. Con EC2, mové la prior de la posterior hasta igualar la de los datos: la raya roja se tapa con la azul.\n"
-        "3. Apretá **EC1** y poné la prior de la posterior en la de los datos (0.10): el costo sube bastante (en mi simulación ≈0.17 → 0.30; en el notebook, 0.19 → 0.34). La posterior con priors 0.1 te empuja a decidir 'clase 0' casi siempre, pero el costo pedía priors 0.5.\n"
+        "3. Apretá **EC1** y poné la prior de la posterior en la de los datos (0.10): el costo sube bastante "
+        "(en esta simulación, de ≈0.17 a ≈0.30; en el notebook, de 0.19 a 0.34). "
+        "Esa posterior te empuja a decidir *clase 0* casi siempre, pero el costo asumía priors 0.5.\n"
         "4. La raya verde (óptimo empírico) casi coincide con la azul porque los LLRs están calibrados por construcción. "
         "En el Labo 4 vas a romper eso a propósito."
     )
@@ -291,20 +361,49 @@ def sim_multi(K, P0, sigma, N, seed):
 
 
 with tabs[2]:
-    init_state(dict(l3_K=10, l3_P0=0.80, l3_sig=0.40, l3_imp=100, l3_a1=0.05, l3_a2=0.30))
+    init_state(dict(l3_K=10, l3_P0=0.80, l3_sig=0.40, l3_imp=100, l3_a1=0.05, l3_a2=0.30, l3_show=0))
     st.subheader("Tres formas de decidir con las mismas posteriors (calibradas)")
     st.write(
-        "**Naive**: siempre la mejor decisión constante. **Argmax**: la clase más probable. "
-        "**Bayes**: la decisión que minimiza el costo esperado. Las posteriors son las mismas, cambia solo la regla."
+        "Datos simulados con **K clases**: la clase 0 tiene prior P₀ y las otras se reparten el resto. "
+        "El sistema entrega las **posteriors verdaderas**, así que toda diferencia entre reglas se debe solo a **cómo decide**, no a la calidad del sistema."
     )
-    ctrl, out = st.columns([1, 2.4])
+    with st.expander("Conceptos de esta pestaña", expanded=True):
+        k1, k2 = st.columns(2)
+        with k1:
+            st.markdown(
+                "**Reglas de decisión**\n"
+                "- **Naive**: ignora la muestra y toma siempre la *mejor decisión constante* (la de menor costo promedio dadas las priors).\n"
+                "- **Argmax** (MAP): elige la clase con mayor posterior. Nunca se abstiene y **ignora los costos**.\n"
+                "- **Bayes**: para cada muestra elige la decisión que minimiza el **costo esperado** Σᵢ C[i, j]·P(clase i | x). "
+                "Es óptima *si las posteriors están calibradas*.\n\n"
+                "**Cómo se mide**\n"
+                "- **EC**: costo promedio de las decisiones tomadas.\n"
+                "- **EC normalizado**: EC dividido por el del mejor Naive. **1 = igual que ignorar la muestra, menor que 1 = mejor, mayor que 1 = peor.**\n"
+                "- **% abst.**: proporción de muestras en las que el sistema elige *no decidir*."
+            )
+        with k2:
+            st.markdown(
+                "**Matrices de costo** (C[i, j] = costo de decidir *j* cuando la clase real es *i*; 0 en los aciertos)\n"
+                "- **0-1**: todo error cuesta 1. Equivale a minimizar la tasa de error (maximizar el accuracy).\n"
+                "- **Inversa a las priors (balanced)**: un error cuando la clase real es *i* cuesta 1/(K·Pᵢ). "
+                "Errarle a una clase rara sale caro; equivale a la *balanced accuracy* (recall promedio).\n"
+                "- **Última clase ×N**: como 0-1, pero cuando la clase real es la *última* (K−1, una clase rara) cada error cuesta N. "
+                "Modela una clase crítica (ej. tumor).\n"
+                "- **Abstención α**: agrega una decisión extra, *no decido* (derivo a un humano), que cuesta α sea cual sea la clase real; "
+                "un error normal sigue costando 1. Conviene abstenerse cuando 1 − (mayor posterior) > α, o sea cuando la confianza es baja."
+            )
+    ctrl, out = st.columns([1, 2.6])
     with ctrl:
-        K = st.slider("Cantidad de clases", 2, 10, key="l3_K")
-        P0 = st.slider("Prior de la clase 0", 0.2, 0.95, key="l3_P0", step=0.01)
-        sig = st.slider("Ruido de los datos (σ)", 0.2, 1.0, key="l3_sig", step=0.05, help="Más alto = problema más difícil.")
-        imp = st.select_slider("Cuánto más grave es errarle a la última clase", [1, 3, 10, 30, 100, 300], key="l3_imp")
-        a1 = st.slider("Costo de abstenerse (1)", 0.01, 0.9, key="l3_a1", step=0.01)
-        a2 = st.slider("Costo de abstenerse (2)", 0.01, 0.9, key="l3_a2", step=0.01)
+        K = st.slider("Cantidad de clases (K)", 2, 10, key="l3_K")
+        P0 = st.slider("Prior de la clase 0", 0.2, 0.95, key="l3_P0", step=0.01,
+                       help="Las otras K−1 clases se reparten el resto por igual.")
+        sig = st.slider("Ruido de los datos (σ)", 0.2, 1.0, key="l3_sig", step=0.05,
+                        help="Más alto = clases más confundibles = problema más difícil.")
+        imp = st.select_slider("N de «última clase ×N»", [1, 3, 10, 30, 100, 300], key="l3_imp",
+                               help="Cuánto más cuesta errarle cuando la clase real es la última.")
+        a1 = st.slider("α de la primera matriz con abstención", 0.01, 0.9, key="l3_a1", step=0.01,
+                       help="Costo de la decisión 'no decido'.")
+        a2 = st.slider("α de la segunda matriz con abstención", 0.01, 0.9, key="l3_a2", step=0.01)
 
     t, lp, pri = sim_multi(K, P0, sig, 10000, 0)
     q = np.exp(lp)
@@ -313,10 +412,10 @@ with tabs[2]:
     imp_m = base_c.copy(); imp_m[-1, :] *= imp
     costs = {
         "0-1": base_c,
-        "inversa a las priors\n(balanced)": base_c / pri[:, None] / K,
-        f"última clase\n×{imp}": imp_m,
-        f"abstención\nα={a1:.2f}": np.hstack([base_c, np.full((K, 1), a1)]),
-        f"abstención\nα={a2:.2f}": np.hstack([base_c, np.full((K, 1), a2)]),
+        "inversa a las priors (balanced)": base_c / pri[:, None] / K,
+        f"última clase ×{imp}": imp_m,
+        f"abstención α={a1:.2f}": np.hstack([base_c, np.full((K, 1), a1)]),
+        f"abstención α={a2:.2f}": np.hstack([base_c, np.full((K, 1), a2)]),
     }
     p_emp = np.bincount(t, minlength=K) / N
     rows, nec = {}, {"Argmax": [], "Bayes": []}
@@ -332,36 +431,47 @@ with tabs[2]:
             cell = f"{e:.3f} / {e / Cb:.2f}"
             if C.shape[1] > K:
                 cell += f"  ({(dd == K).mean() * 100:.0f}% abst.)"
-            rows.setdefault(rule, {})[name.replace("\n", " ")] = cell
+            rows.setdefault(rule, {})[name] = cell
             if rule != "Naive":
                 nec[rule].append(e / Cb)
 
     with out:
-        fig, ax = fig_small(8.2, 3.6)
+        fig, ax = fig_small(8.0, 3.9)
         x = np.arange(len(costs)); w = 0.36
         cap = 3.0
         for i, (rule, col) in enumerate([("Argmax", ORANGE), ("Bayes", BLUE)]):
             vals = np.array(nec[rule])
             ax.bar(x + (i - 0.5) * w, np.minimum(vals, cap), w, label=rule, color=col)
             for xi, vi in zip(x + (i - 0.5) * w, vals):
-                ax.text(xi, min(vi, cap) + 0.04, f"{vi:.2f}" if vi <= cap else f"{vi:.0f}↑", ha="center", fontsize=8)
-        ax.axhline(1, color="k", ls="--", lw=1); ax.text(len(costs) - 0.45, 1.03, "naive = 1", ha="right", fontsize=8)
-        ax.set_xticks(x); ax.set_xticklabels(list(costs.keys()), fontsize=8)
-        ax.set_ylabel("costo esperado normalizado"); ax.set_ylim(0, cap + 0.3); ax.legend(frameon=False, ncol=2)
+                ax.text(xi, min(vi, cap) + 0.04, f"{vi:.2f}" if vi <= cap else f"{vi:.0f} ↑", ha="center", fontsize=9)
+        ax.axhline(1, color="k", ls="--", lw=1.2, label="Naive = 1 (ignorar la muestra)")
+        ax.set_xticks(x); ax.set_xticklabels([textwrap.fill(n, 16) for n in costs.keys()], fontsize=9)
+        ax.set_xlabel("matriz de costo con la que se evalúa"); ax.set_ylabel("costo esperado normalizado")
+        ax.set_ylim(0, cap + 0.35); ax.legend(frameon=False, ncol=3, loc="upper left")
         show(fig)
-        st.markdown("**Tabla**: `EC / EC normalizado` (y % de abstenciones cuando hay esa opción)")
-        st.dataframe(pd.DataFrame(rows).T[list(v.replace("\n", " ") for v in costs.keys())])
+        st.caption("**Cómo leerlo:** cada grupo de barras es una matriz de costo; la altura es el costo normalizado de cada regla (menor es mejor). "
+                   "Por encima de la línea punteada la regla es **peor que ignorar la muestra**. Las barras cortadas en 3 llevan una flecha ↑ y el valor real.")
+        st.markdown("**Tabla:** cada celda es `EC / EC normalizado` (y el % de abstenciones cuando la matriz tiene esa opción).")
+        st.dataframe(pd.DataFrame(rows).T[list(costs.keys())])
         naive_txt = ", ".join(
-            f"{n.replace(chr(10), ' ')}: {'abstenerse' if int(np.argmin(pri @ C)) == K else 'clase ' + str(int(np.argmin(pri @ C)))}"
+            f"{n}: {'abstenerse' if int(np.argmin(pri @ C)) == K else 'siempre la clase ' + str(int(np.argmin(pri @ C)))}"
             for n, C in costs.items()
         )
-        st.caption(f"Mejor decisión constante (Naive) → {naive_txt}")
+        st.caption(f"Mejor decisión constante (Naive) para cada matriz → {naive_txt}. "
+                   "En *inversa a las priors* todas las constantes cuestan lo mismo.")
+        st.markdown("**Ver una matriz de costo concreta**")
+        sel = st.selectbox("Matriz", list(costs.keys()), key="l3_sel", label_visibility="collapsed")
+        Cs = costs[sel]
+        cols_ = [f"decide {j}" for j in range(K)] + (["no decido"] if Cs.shape[1] > K else [])
+        st.dataframe(pd.DataFrame(np.round(Cs, 3), index=[f"clase real {i}" for i in range(K)], columns=cols_))
+        st.caption("Filas: clase real. Columnas: decisión tomada. Cada celda es el costo de esa combinación.")
 
     st.markdown("**Experimentos guiados**")
     st.markdown(
         "1. Con costo **0-1** Argmax y Bayes dan exactamente lo mismo: argmax solo es óptimo para ese costo.\n"
-        "2. Subí *cuánto más grave es la última clase*: Argmax empeora sin límite y Bayes se adapta (decide esa clase con menos confianza).\n"
-        "3. En **abstención**, Argmax nunca se abstiene: si su error supera α, su costo normalizado pasa de 1, o sea **peor que ignorar el input**. Bayes abstiene cuando la confianza es baja.\n"
+        "2. Subí la **N de «última clase ×N»**: Argmax empeora sin límite y Bayes se adapta (decide esa clase aunque no sea la más probable).\n"
+        "3. En **abstención**, Argmax nunca se abstiene: si su tasa de error supera α, su costo normalizado pasa de 1, o sea **es peor que ignorar la muestra**. "
+        "Bayes abstiene cuando la confianza es baja.\n"
         "4. Bajá α hasta que el Naive sea abstenerse siempre (100% en la tabla): por eso hace falta normalizar.\n"
         "5. Subí σ (más difícil) o cambiá la prior de la clase 0 y mirá cómo se corre la mejor decisión constante."
     )
@@ -374,16 +484,39 @@ with tabs[3]:
     init_state(dict(ln_beta=0.5, ln_aS=0.5, ln_aH=0.9, ln_g=0.4, ln_x=0.4))
     st.subheader("Elegir costos = modelar el problema (ejemplo de préstamos)")
     st.write(
-        "Hay **2 clases** (el cliente paga / no paga) pero **3 decisiones**: denegar (D), ofrecer tasa alta (AH) u ofrecer tasa estándar (AS). "
-        "La lectura de AH/AS sale de los nombres de variables del notebook. Se parte de **utilidades** del negocio y se convierten en costos."
+        "Hay **2 clases** (el cliente paga / no paga) pero **3 decisiones**. "
+        "Se parte de **utilidades** del negocio (plata que se gana o se pierde) y se convierten en **costos**."
     )
-    ctrl, out = st.columns([1, 2.2])
+    with st.expander("Conceptos de esta pestaña", expanded=True):
+        k1, k2 = st.columns(2)
+        with k1:
+            st.markdown(
+                "**Decisiones** (los nombres salen del notebook; la lectura de AH/AS es mía)\n"
+                "- **D**: denegar el préstamo.\n"
+                "- **AH**: aceptar ofreciendo tasa **alta**.\n"
+                "- **AS**: aceptar ofreciendo tasa **estándar** (más baja).\n\n"
+                "**Parámetros**\n"
+                "- **β**: fracción de los clientes que pagarían y aceptan la tasa alta (el resto se va y no genera ganancia).\n"
+                "- **αS, αH**: interés total que paga un cliente que cumple, como fracción del capital, con cada tasa.\n"
+                "- **γ**: fracción de lo debido (capital + interés) que devuelve un cliente que no cumple."
+            )
+        with k2:
+            st.markdown(
+                "**Utilidad** U[clase, decisión]: ganancia por préstamo (negativa = pérdida). "
+                "Ej.: AS a quien paga = +αS; AH a quien paga = β·αH; a quien no paga, γ·(1+α) − 1 (recupera una parte, pero prestó 1).\n\n"
+                "**Costo** = −U, restando en cada fila su mínimo (queda un 0 por fila). No cambia cuál es la decisión óptima.\n\n"
+                "**P(default)**: probabilidad de que el cliente no pague. El costo esperado de cada decisión es "
+                "C[paga, j]·(1 − P) + C[no paga, j]·P, o sea **una recta en P**.\n\n"
+                "**Decisión de Bayes**: en cada P, la decisión cuya recta está más abajo. Las regiones se separan en umbrales sobre P."
+            )
+    ctrl, out = st.columns([1, 2])
     with ctrl:
         beta = st.slider("β: % de buenos pagadores que aceptan la tasa alta", 0.0, 1.0, key="ln_beta", step=0.05)
-        aS = st.slider("αS: interés total pagado con tasa estándar / capital", 0.1, 1.5, key="ln_aS", step=0.05)
-        aH = st.slider("αH: interés total pagado con tasa alta / capital", 0.1, 1.5, key="ln_aH", step=0.05)
+        aS = st.slider("αS: interés con tasa estándar / capital", 0.1, 1.5, key="ln_aS", step=0.05)
+        aH = st.slider("αH: interés con tasa alta / capital", 0.1, 1.5, key="ln_aH", step=0.05)
         g = st.slider("γ: fracción de la deuda que paga un moroso", 0.0, 1.0, key="ln_g", step=0.05)
-        x0 = st.slider("Probabilidad de default de un cliente concreto", 0.0, 1.0, key="ln_x", step=0.01)
+        x0 = st.slider("P(default) de un cliente concreto", 0.0, 1.0, key="ln_x", step=0.01,
+                       help="Marca la línea punteada vertical y muestra qué decisión conviene para ese cliente.")
 
     U = np.array([[0, beta * aH, aS], [0, g * (1 + aH) - 1, g * (1 + aS) - 1]])
     C = -U
@@ -397,33 +530,36 @@ with tabs[3]:
     cols = [BLUE, RED, GREEN]
 
     with out:
-        fig, ax = fig_small(6.6, 3.8)
+        fig, ax = fig_small(6.4, 4.4)
         for j in range(3):
-            ax.plot(xs, cost_lines[:, j], color=cols[j], label=names[j])
+            ax.plot(xs, cost_lines[:, j], color=cols[j], lw=2, label=names[j])
         for lo, hi, j in regions:
             ax.axvspan(lo, hi, color=cols[j], alpha=0.12)
-        ax.axvline(x0, color="k", ls=":", lw=1.2)
-        ax.set_xlabel("probabilidad de default"); ax.set_ylabel("costo esperado de cada decisión")
-        ax.set_xlim(0, 1); ax.set_ylim(0, max(0.5, C.max() * 1.05)); ax.legend(frameon=False, fontsize=8)
+        ax.axvline(x0, color="k", ls=":", lw=1.4, label="cliente elegido")
+        ax.set_xlabel("P(default): probabilidad de que el cliente no pague")
+        ax.set_ylabel("costo esperado de cada decisión")
+        ax.set_xlim(0, 1); ax.set_ylim(0, max(0.5, C.max() * 1.05)); legend_below(ax, ncol=2, y=-0.2)
         show(fig)
-        st.markdown("**Regiones de decisión de Bayes**: " + " · ".join(
-            f"{names[j]} si P(default) entre {lo:.2f} y {hi:.2f}" for lo, hi, j in regions))
+        st.caption("**Cómo leerlo:** cada recta es el costo esperado de una decisión según qué tan probable es que el cliente no pague. "
+                   "La zona sombreada indica qué decisión es la más barata (la recta más baja) en cada rango de P(default).")
+        st.markdown("**Regiones de decisión de Bayes:** " + " · ".join(
+            f"**{names[j]}** si P(default) entre {lo:.2f} y {hi:.2f}" for lo, hi, j in regions))
         cx = C[0] * (1 - x0) + C[1] * x0
-        st.info(f"Para P(default) = {x0:.2f}: costos D={cx[0]:.3f}, AH={cx[1]:.3f}, AS={cx[2]:.3f} → la decisión óptima es **{names[int(cx.argmin())]}**.")
+        st.info(f"Para P(default) = {x0:.2f}: costos D = {cx[0]:.3f}, AH = {cx[1]:.3f}, AS = {cx[2]:.3f} → la decisión óptima es **{names[int(cx.argmin())]}**.")
         t1, t2 = st.columns(2)
         with t1:
-            st.write("Utilidad (filas: clase real)")
+            st.write("**Utilidad** (filas: clase real)")
             st.dataframe(pd.DataFrame(U, index=["Paga", "No paga"], columns=["D", "AH", "AS"]).round(3))
         with t2:
-            st.write("Costo estandarizado = −U − mínimo de cada fila")
+            st.write("**Costo** = −U menos el mínimo de cada fila")
             st.dataframe(pd.DataFrame(C, index=["Paga", "No paga"], columns=["D", "AH", "AS"]).round(3))
 
     st.markdown("**Experimentos guiados**")
     st.markdown(
         "1. Valores por defecto: ofrecés tasa estándar si el riesgo es bajo, tasa alta en el medio y denegás si es muy alto. "
-        "Como una decisión de Bayes es el mínimo de rectas, las regiones se cortan en umbrales sobre P(default).\n"
+        "Como la decisión de Bayes es la recta más baja, las regiones se cortan en umbrales sobre P(default).\n"
         "2. Bajá **β**: cada vez menos gente acepta la tasa alta y la región AH se achica hasta desaparecer.\n"
-        "3. Subí **γ**: los morosos devuelven más, así que denegar deja de ser tan necesario y esa región se achica.\n"
+        "3. Subí **γ**: los morosos devuelven más, así que denegar deja de ser necesario y esa región desaparece.\n"
         "4. Bajá **αH** hasta acercarlo (o pasarlo por debajo) de **αS**: la tasa alta deja de compensar el riesgo de que rechacen la oferta y la región AH desaparece."
     )
 
@@ -436,8 +572,42 @@ with tabs[4]:
     st.subheader("Los mismos scores, distinta calibración")
     st.write(
         "Se sigue el diagrama de `Simulacion.pdf`: LLR verdadero → **escala/shift** (mc1) → se le suman las **priors** (correctas o incorrectas) → "
-        "se multiplican los log-posteriors por un factor (**mc2**, sobreconfianza). Abajo se compara el sistema crudo con versiones calibradas."
+        "se multiplican los log-odds por un factor (**mc2**, sobreconfianza). Abajo se compara el sistema crudo con versiones calibradas."
     )
+    with st.expander("Conceptos de esta pestaña", expanded=True):
+        k1, k2 = st.columns(2)
+        with k1:
+            st.markdown(
+                "**El sistema y cómo se rompe**\n"
+                "- **q₁**: probabilidad que el sistema le da a la clase 1. **Log-odds** z = log(q₁ / q₀); 0 significa 50/50.\n"
+                "- **Calibrado**: cuando dice \"90%\", acierta cerca del 90% de las veces. Solo así las decisiones de Bayes son óptimas.\n"
+                "- **Escala a y shift b**: LLR′ = a·LLR + b (scores mal escalados o corridos, tipo *mc1*).\n"
+                "- **Priors que usa el sistema**: al pasar de LLR a posterior se suma log(P₁/P₀). *Correctas* = las de los datos, "
+                "*invertidas* = intercambiadas, *uniformes* = 0.5. Equivale a un shift.\n"
+                "- **Sobreconfianza (tipo *mc2*)**: multiplicar los log-odds por un factor > 1. No cambia el signo (las decisiones 0-1 son las mismas) "
+                "pero empuja las probabilidades a 0 y 1.\n"
+                "- **Ideal**: la posterior verdadera (se conoce porque es una simulación)."
+            )
+            st.markdown(
+                "**Calibrar** = transformar los scores ya generados, sin tocar el modelo. Se ajusta minimizando la cross-entropy:\n"
+                "- **Solo escala** (*temperature scaling*): z′ = w·z.\n"
+                "- **Escala + shift** (*Platt scaling*, regresión logística lineal): z′ = w·z + c.\n"
+                "- **Descalibración**: cuánto mejora una métrica al calibrar (crudo − calibrado)."
+            )
+        with k2:
+            st.markdown(
+                "**Métricas** (todas normalizadas: **1 = igual que ignorar el sistema y usar solo las priors, mayor que 1 = peor, menor = mejor**)\n"
+                "- **Costo 0-1**: tasa de error de las decisiones de Bayes (decidir 1 si q₁ > 0.5).\n"
+                "- **Costo asimétrico α**: perder un caso de clase 1 cuesta α veces más que una falsa alarma.\n"
+                "- **Costo con abstención**: se puede elegir *no decido* con ese costo.\n"
+                "- **Cross-entropy**: promedio de −log(probabilidad que el sistema le dio a la clase correcta).\n"
+                "- **Brier**: promedio del error cuadrático entre la probabilidad y la clase real (0 o 1).\n\n"
+                "**PSR estricta** (*proper scoring rule*): puntaje que se minimiza solo cuando las probabilidades son las verdaderas; "
+                "mide la calidad de las probabilidades en sí. **Cross-entropy y Brier lo son. El costo 0-1 no**: solo mira de qué lado del 0.5 cae la probabilidad.\n\n"
+                "**En los gráficos**\n"
+                "- **MAP**: decidir 1 si q₁ > 0.5, sin mirar los costos.\n"
+                "- **Óptimo \"tramposo\"**: el mejor umbral elegido mirando las etiquetas de evaluación; es optimista."
+            )
     ctrl, out = st.columns([1, 2.6])
     with ctrl:
         st.markdown("**Presets**")
@@ -448,14 +618,15 @@ with tabs[4]:
         p3c.button("Tipo mc2 (×10)", on_click=set_state, kwargs=dict(l4_a=1.0, l4_b=0.0, l4_pr="correctas", l4_s2=10.0))
         p4c.button("Priors incorrectas", on_click=set_state, kwargs=dict(l4_a=1.0, l4_b=0.0, l4_pr="invertidas", l4_s2=1.0))
         st.markdown("**Datos**")
-        d4 = st.slider("Separación (d′)", 0.5, 5.0, key="l4_d", step=0.1)
+        d4 = st.slider("Separación (d′)", 0.5, 5.0, key="l4_d", step=0.1, help="Más alto = clases más separadas.")
         P1_4 = st.slider("Prior de la clase 1 en los datos", 0.02, 0.5, key="l4_P1", step=0.01)
         seed4 = st.number_input("Semilla ", 0, 999, key="l4_seed")
         st.markdown("**Cómo se rompe la calibración**")
-        a4 = st.slider("Escala del LLR (a)", 0.2, 3.0, key="l4_a", step=0.1)
+        a4 = st.slider("Escala del LLR (a)", 0.2, 3.0, key="l4_a", step=0.1, help="LLR′ = a·LLR + b. Con a = 1 y b = 0 no se toca el LLR.")
         b4 = st.slider("Shift del LLR (b)", -3.0, 3.0, key="l4_b", step=0.1)
         pr4 = st.radio("Priors que usa el sistema", ["correctas", "invertidas", "uniformes"], key="l4_pr", horizontal=True)
-        s24 = st.slider("Factor sobre los log-posteriors (sobreconfianza)", 1.0, 20.0, key="l4_s2", step=0.5)
+        s24 = st.slider("Factor sobre los log-odds (sobreconfianza)", 1.0, 20.0, key="l4_s2", step=0.5,
+                        help="1 = sin sobreconfianza. 10 = tipo mc2 del diagrama.")
         st.markdown("**Costos a evaluar**")
         al4 = st.select_slider("Costo asimétrico: perder la clase 1 cuesta α veces más",
                                [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0, 20.0], key="l4_alpha")
@@ -506,19 +677,24 @@ with tabs[4]:
     df_m = pd.DataFrame(table, index=list(labels.values()))
 
     with out:
-        st.markdown("**Todas las métricas están normalizadas por el sistema que solo usa las priors: 1 = igual que ignorar el input, >1 = peor.**")
+        st.markdown("**Tabla de métricas** (normalizadas: 1 = igual que ignorar el sistema, mayor que 1 = peor, menor = mejor). "
+                    "Columnas: el sistema tal cual sale (*Crudo*), tras calibrarlo de dos maneras, y la posterior verdadera (*Ideal*).")
         st.dataframe(df_m)
-        f1, f2, f3 = st.columns(3)
-        with f1:
-            fig, ax = fig_small(4.4, 3.2)
+
+        r1a, r1b = st.columns(2)
+        with r1a:
+            fig, ax = fig_small(5.0, 4.4)
             lo, hi = np.percentile(z_raw, [0.5, 99.5]); bins = np.linspace(lo, hi, 60)
-            ax.hist(z_raw[t == 0], bins, density=True, alpha=0.6, color=BLUE, label="clase 0")
-            ax.hist(z_raw[t == 1], bins, density=True, alpha=0.6, color=RED, label="clase 1")
-            ax.axvline(0, color="k", ls="--", lw=1); ax.set_title("log-odds del sistema (crudo)", fontsize=9)
-            ax.legend(fontsize=7, frameon=False); show(fig)
-        with f2:
-            fig, ax = fig_small(4.4, 3.2)
-            ax.plot([0, 1], [0, 1], color="k", ls=":", lw=1)
+            ax.hist(z_raw[t == 0], bins, density=True, alpha=0.6, color=BLUE, label="muestras de clase 0")
+            ax.hist(z_raw[t == 1], bins, density=True, alpha=0.6, color=RED, label="muestras de clase 1")
+            ax.axvline(0, color="k", ls="--", lw=1.2, label="umbral 0 (q₁ = 0.5)")
+            ax.set_xlabel("log-odds del sistema crudo, z = log(q₁/q₀)"); ax.set_ylabel("densidad de muestras")
+            legend_below(ax, y=-0.2); show(fig)
+            st.caption("**Cómo leerlo:** qué log-odds le asigna el sistema a cada clase. Con sobreconfianza el eje se estira (mismos datos, escala ×N) "
+                       "y con priors incorrectas todo se corre hacia un lado.")
+        with r1b:
+            fig, ax = fig_small(5.0, 4.4)
+            ax.plot([0, 1], [0, 1], color="k", ls=":", lw=1.2, label="calibración perfecta")
             edges = np.linspace(0, 1, 11)
             for (name, z), col in zip(list(versions.items())[:3], [RED, ORANGE, GREEN]):
                 qq = sigmoid(z); idx = np.digitize(qq, edges[1:-1])
@@ -527,48 +703,58 @@ with tabs[4]:
                     m = idx == k
                     if m.sum() >= 15:
                         xs_.append(qq[m].mean()); ys_.append(t[m].mean()); ns_.append(m.sum())
-                ax.plot(xs_, ys_, "-o", color=col, ms=4, label=name, alpha=0.9)
-            ax.set_xlabel("probabilidad que dice el sistema"); ax.set_ylabel("fracción real de clase 1")
-            ax.set_title("calibración (más cerca de la diagonal = mejor)", fontsize=9); ax.legend(fontsize=6.5, frameon=False); show(fig)
-        with f3:
-            fig, ax = fig_small(4.4, 3.2)
+                ax.plot(xs_, ys_, "-", color=col, lw=1, alpha=0.6)
+                ax.scatter(xs_, ys_, s=12 + 220 * np.sqrt(np.array(ns_) / len(t)), color=col, label=name, zorder=3, alpha=0.9)
+            ax.set_xlabel("probabilidad que dice el sistema (q₁)"); ax.set_ylabel("frecuencia real de clase 1")
+            legend_below(ax, y=-0.2); show(fig)
+            st.caption("**Cómo leerlo:** se agrupan las muestras según la probabilidad que dio el sistema y se mira qué fracción era realmente clase 1. "
+                       "Sobre la diagonal = calibrado. El tamaño del punto indica cuántas muestras hay.")
+
+        r2a, r2b = st.columns(2)
+        with r2a:
+            fig, ax = fig_small(5.0, 4.4)
             las = np.exp(np.arange(-4, 4.01, 0.5))
             qs = np.quantile(z_raw, np.linspace(0, 1, 401))
-            curves = {"MAP (umbral 0.5)": [], "Bayes, crudo": [], "Bayes, calibrado": [], "Óptimo (umbral 'tramposo')": []}
+            curves = {"MAP (umbral 0.5)": [], "Bayes, crudo": [], "Bayes, calibrado": [], "Óptimo 'tramposo'": []}
             for a_ in las:
-                Cb_ = min(Pe1 * a_, 1 - Pe1)
                 def ecz(z, tau):
                     return float(ec_at_thresholds(t, z, np.array([tau]), 1.0, a_, Pe1)[0])
                 curves["MAP (umbral 0.5)"].append(ecz(z_raw, 0.0))
                 curves["Bayes, crudo"].append(ecz(z_raw, -np.log(a_)))
                 zc = w_p * z_raw + c_p
                 curves["Bayes, calibrado"].append(ecz(zc, -np.log(a_)))
-                curves["Óptimo (umbral 'tramposo')"].append(float(ec_at_thresholds(t, z_raw, qs, 1.0, a_, Pe1).min()))
+                curves["Óptimo 'tramposo'"].append(float(ec_at_thresholds(t, z_raw, qs, 1.0, a_, Pe1).min()))
             for (name, vals), col in zip(curves.items(), [RED, ORANGE, GREEN, "k"]):
-                ax.plot(np.log(las), np.minimum(vals, 3), color=col, label=name, lw=1.6 if name != "Óptimo (umbral 'tramposo')" else 1, ls="-" if name != "Óptimo (umbral 'tramposo')" else "--")
-            ax.axhline(1, color=GREY, ls=":", lw=1); ax.axvline(np.log(al4), color="k", lw=0.6, alpha=0.4)
-            ax.set_xlabel("log α (costo de perder la clase 1)"); ax.set_ylabel("EC normalizado (tope 3)")
-            ax.set_title("descalibración según el punto de operación", fontsize=9); ax.legend(fontsize=6.5, frameon=False); show(fig)
-
-        with st.expander("Log loss vs Brier vs costo 0-1 (por qué la cross-entropy castiga la sobreconfianza)"):
+                tramp = name == "Óptimo 'tramposo'"
+                ax.plot(np.log(las), np.minimum(vals, 3), color=col, label=name, lw=1.2 if tramp else 1.8, ls="--" if tramp else "-")
+            ax.axhline(1, color=GREY, ls=":", lw=1.2)
+            ax.axvline(np.log(al4), color="k", lw=0.8, alpha=0.4)
+            ax.set_xlabel("log α (cuánto más cuesta perder la clase 1)"); ax.set_ylabel("costo esperado normalizado (tope 3)")
+            legend_below(ax, ncol=2, y=-0.2); show(fig)
+            st.caption("**Cómo leerlo:** cada punto es un costo distinto (α). Sobre la línea punteada = peor que ignorar el sistema. "
+                       "La distancia entre *Bayes crudo* y *Bayes calibrado* es la descalibración **en ese punto de operación**; "
+                       "la vertical fina marca el α que elegiste en la perilla de costos.")
+        with r2b:
             qgrid = np.linspace(0.001, 0.999, 500)
-            fig, ax = fig_small(6, 3.2)
-            ax.plot(qgrid, -np.log(qgrid), color=BLUE, label="cross-entropy: −log q")
-            ax.plot(qgrid, 2 * (1 - qgrid) ** 2, color=ORANGE, label="Brier: 2(1−q)²")
-            ax.plot(qgrid, (qgrid < 0.5) * 2.0, color=GREY, ls="--", label="0-1 (×2, solo mira si q<0.5)")
-            ax.set_ylim(0, 5); ax.set_xlabel("q = probabilidad que el sistema le dio a la clase correcta"); ax.set_ylabel("costo")
-            ax.legend(frameon=False, fontsize=8); show(fig)
-            st.caption("Cuando q→0 (sistema seguro de algo incorrecto) el log loss se va a infinito; el Brier queda acotado y el 0-1 ni distingue 0.4 de 0.01.")
+            fig, ax = fig_small(5.0, 4.4)
+            ax.plot(qgrid, -np.log(qgrid), color=BLUE, lw=2, label="cross-entropy: −log q")
+            ax.plot(qgrid, 2 * (1 - qgrid) ** 2, color=ORANGE, lw=2, label="Brier: 2·(1 − q)²")
+            ax.plot(qgrid, (qgrid < 0.5) * 2.0, color=GREY, ls="--", lw=2, label="0-1 (×2): solo mira si q < 0.5")
+            ax.set_ylim(0, 5); ax.set_xlabel("q: probabilidad que el sistema le dio a la clase correcta"); ax.set_ylabel("costo por muestra")
+            legend_below(ax, y=-0.2); show(fig)
+            st.caption("**Cómo leerlo:** costo de una muestra según la probabilidad que el sistema le dio a su clase real. "
+                       "Si el sistema está seguro de algo incorrecto (q → 0) la cross-entropy se va a infinito, el Brier queda acotado y el 0-1 "
+                       "no distingue q = 0.4 de q = 0.01.")
 
     st.markdown("**Experimentos guiados**")
     st.markdown(
-        "1. Con **Calibrado**, las cuatro columnas son prácticamente iguales (las diferencias chiquitas son ruido de muestreo): no hay nada que mejorar calibrando.\n"
-        "2. **Tipo mc2 (×10)**: el costo 0-1 *no cambia* (multiplicar por un positivo no mueve el signo) pero cross-entropy explota. "
+        "1. Con **Calibrado**, las cuatro columnas de la tabla son prácticamente iguales (las diferencias chiquitas son ruido de muestreo): no hay nada que mejorar calibrando.\n"
+        "2. **Tipo mc2 (×10)**: el costo 0-1 *no cambia* (multiplicar por un positivo no mueve el signo) pero la cross-entropy explota. "
         "El costo 0-1 es una PSR no estricta: no ve la calibración. La cross-entropy sí. "
-        "En el gráfico del medio, las probabilidades quedan pegadas a 0 y 1 lejos de la diagonal. Calibrar con **solo escala** lo arregla.\n"
-        "3. **Priors incorrectas**: el costo 0-1 pasa de 1, o sea peor que ignorar el sistema. "
+        "En el gráfico de calibración los puntos quedan lejos de la diagonal. Calibrar con **solo escala** lo arregla.\n"
+        "3. **Priors incorrectas**: el costo 0-1 pasa de 1, o sea es peor que ignorar el sistema. "
         "Calibrar con **solo escala no alcanza** (la escala no corrige un corrimiento), pero **escala + shift** sí (clase 6, p. 37).\n"
-        "4. **Tipo mc1** con distintos α: en el gráfico de la derecha, la brecha entre *Bayes crudo* y *Bayes calibrado* depende del punto de operación; "
-        "a veces es casi nula. Esa es la descalibración *en ese punto*.\n"
-        "5. La curva 'Óptimo' elige el umbral mirando los datos de evaluación, por eso es optimista (clase 1, p. 26)."
+        "4. **Tipo mc1** y mirá el gráfico de costo contra log α: la brecha entre *Bayes crudo* y *Bayes calibrado* depende del punto de operación "
+        "y en algunos α es casi nula. Esa es la descalibración *en ese punto*.\n"
+        "5. La curva 'Óptimo tramposo' elige el umbral mirando los datos de evaluación, por eso es optimista (clase 1, p. 26)."
     )
